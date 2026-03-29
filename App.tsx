@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
-import { Pressable, StatusBar, StyleSheet, Text } from 'react-native'
+import { Pressable, StatusBar, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { enableScreens } from 'react-native-screens'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import LoginScreen from './src/screens/LoginScreen'
 import CustomerHomeScreen from './src/screens/CustomerHomeScreen'
 import { colors } from './src/theme'
@@ -17,8 +18,11 @@ import type { AuthUser } from './src/api'
 import { fetchOrders } from './src/api'
 import type { Order } from './src/types'
 import OrdersScreen from './src/screens/OrdersScreen'
+import OnboardingScreen from './src/screens/OnboardingScreen'
+import { initTelemetry, installGlobalErrorHandler, trackScreen } from './src/telemetry'
 
 type RootStackParamList = {
+  Onboarding: undefined
   Login: undefined
   Main: undefined
 }
@@ -53,17 +57,53 @@ const App = () => {
   const [token, setToken] = useState<string | null>(null)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
+  const [ordersLoading, setOrdersLoading] = useState(false)
+  const [ordersError, setOrdersError] = useState<string | null>(null)
+  const [booting, setBooting] = useState(true)
+  const [onboardingDone, setOnboardingDone] = useState(false)
+  const navigationRef = useRef<any>(null)
+  const routeNameRef = useRef<string | undefined>(undefined)
 
   const logout = () => {
     setToken(null)
     setUser(null)
+    setOrders([])
+    setOrdersLoading(false)
+    setOrdersError(null)
   }
+
+  useEffect(() => {
+    initTelemetry()
+    installGlobalErrorHandler()
+  }, [])
+
+  useEffect(() => {
+    const loadOnboarding = async () => {
+      try {
+        const value = await AsyncStorage.getItem('onboarding_done')
+        setOnboardingDone(value === 'true')
+      } catch {
+        setOnboardingDone(false)
+      } finally {
+        setBooting(false)
+      }
+    }
+    loadOnboarding()
+  }, [])
 
   useEffect(() => {
     const load = async () => {
       if (!token) return
-      const data = await fetchOrders(token)
-      setOrders(data)
+      try {
+        setOrdersLoading(true)
+        setOrdersError(null)
+        const data = await fetchOrders(token)
+        setOrders(data)
+      } catch (error) {
+        setOrdersError(error instanceof Error ? error.message : 'Unable to load orders.')
+      } finally {
+        setOrdersLoading(false)
+      }
     }
     load()
   }, [token])
@@ -120,7 +160,26 @@ const App = () => {
         options={{ title: 'Storefront', headerShown: false }}
       />
       <Tabs.Screen name="Orders" options={{ title: 'Orders', headerRight: () => <LogoutButton /> }}>
-        {() => <OrdersScreen orders={orders} />}
+        {() => (
+          <OrdersScreen
+            orders={orders}
+            loading={ordersLoading}
+            error={ordersError}
+            onRetry={async () => {
+              if (!token) return
+              setOrdersLoading(true)
+              setOrdersError(null)
+              try {
+                const data = await fetchOrders(token)
+                setOrders(data)
+              } catch (error) {
+                setOrdersError(error instanceof Error ? error.message : 'Unable to load orders.')
+              } finally {
+                setOrdersLoading(false)
+              }
+            }}
+          />
+        )}
       </Tabs.Screen>
       <Tabs.Screen name="Checkout" options={{ title: 'Checkout', headerRight: () => <LogoutButton /> }}>
         {() => <CheckoutScreen token={token} email={user?.email ?? ''} addresses={user?.addresses ?? []} />}
@@ -141,9 +200,43 @@ const App = () => {
     <SafeAreaProvider>
       <StatusBar barStyle="dark-content" backgroundColor={colors.sand} />
       <CartProvider>
-        <NavigationContainer>
+        <NavigationContainer
+          ref={navigationRef}
+          onReady={() => {
+            routeNameRef.current = navigationRef.current?.getCurrentRoute?.()?.name
+            if (routeNameRef.current) {
+              trackScreen(routeNameRef.current)
+            }
+          }}
+          onStateChange={() => {
+            const currentRoute = navigationRef.current?.getCurrentRoute?.()?.name
+            if (currentRoute && routeNameRef.current !== currentRoute) {
+              trackScreen(currentRoute)
+              routeNameRef.current = currentRoute
+            }
+          }}
+        >
           <RootStack.Navigator screenOptions={{ headerShown: false }}>
-            {!token ? (
+            {booting ? (
+              <RootStack.Screen name="Onboarding">
+                {() => (
+                  <View style={styles.loadingScreen}>
+                    <Text style={styles.loadingText}>Loading ShopSwift...</Text>
+                  </View>
+                )}
+              </RootStack.Screen>
+            ) : !onboardingDone ? (
+              <RootStack.Screen name="Onboarding">
+                {() => (
+                  <OnboardingScreen
+                    onFinish={async () => {
+                      await AsyncStorage.setItem('onboarding_done', 'true')
+                      setOnboardingDone(true)
+                    }}
+                  />
+                )}
+              </RootStack.Screen>
+            ) : !token ? (
               <RootStack.Screen name="Login">
                 {() => (
                   <LoginScreen
@@ -175,6 +268,17 @@ const styles = StyleSheet.create({
   },
   logoutText: {
     color: colors.ink,
+    fontWeight: '600',
+  },
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.sand,
+  },
+  loadingText: {
+    color: colors.ink,
+    fontSize: 16,
     fontWeight: '600',
   },
 })

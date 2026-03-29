@@ -4,6 +4,7 @@ import { colors, spacing, text as textStyles, shadows } from '../theme'
 import { createCheckoutSession, createOrder, updateAddresses } from '../api'
 import { useCart } from '../cart'
 import type { Address } from '../types'
+import EmptyState from '../components/EmptyState'
 
 type Props = {
   token: string | null
@@ -118,7 +119,12 @@ const CheckoutScreen = ({ token, email, addresses: initialAddresses = [] }: Prop
               </View>
             </View>
           ))}
-          {!items.length && <Text style={textStyles.muted}>Your cart is empty.</Text>}
+          {!items.length && (
+            <EmptyState
+              title="Your cart is empty"
+              description="Browse the storefront and add items to start checkout."
+            />
+          )}
         </View>
 
         <View style={styles.summary}>

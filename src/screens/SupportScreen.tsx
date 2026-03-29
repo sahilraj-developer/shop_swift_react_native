@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react'
 import { colors, spacing, text as textStyles, shadows } from '../theme'
 import { createSupportTicket, fetchSupportTickets } from '../api'
 import type { SupportTicket } from '../types'
+import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import SkeletonBlock from '../components/Skeleton'
+import { trackError } from '../telemetry'
 
 type Props = {
   token: string | null
@@ -12,11 +16,22 @@ const SupportScreen = ({ token }: Props) => {
   const [subject, setSubject] = useState('')
   const [message, setMessage] = useState('')
   const [tickets, setTickets] = useState<SupportTicket[]>([])
+  const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const load = async () => {
     if (!token) return
-    const result = await fetchSupportTickets(token)
-    setTickets(result)
+    try {
+      setLoading(true)
+      setErrorMessage(null)
+      const result = await fetchSupportTickets(token)
+      setTickets(result)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to load tickets.')
+      trackError(error, 'loadSupportTickets')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -71,19 +86,37 @@ const SupportScreen = ({ token }: Props) => {
         </View>
       </View>
       <View style={styles.grid}>
-        {tickets.map((ticket) => (
-          <View style={styles.ticket} key={ticket._id}>
-            <Text style={styles.ticketTag}>{ticket.status}</Text>
-            <Text style={styles.ticketTitle}>{ticket.subject}</Text>
-            <Text style={textStyles.muted}>{ticket.message}</Text>
-            {ticket.replies?.map((reply, index) => (
-              <Text style={textStyles.muted} key={`${ticket._id}-${index}`}>
-                {reply.byRole}: {reply.message}
-              </Text>
+        {loading && (
+          <>
+            {Array.from({ length: 2 }, (_, index) => (
+              <View style={styles.ticket} key={`skeleton-${index}`}>
+                <SkeletonBlock height={10} width="30%" />
+                <SkeletonBlock height={12} width="70%" />
+                <SkeletonBlock height={10} width="90%" />
+              </View>
             ))}
-          </View>
-        ))}
-        {!tickets.length && <Text style={textStyles.muted}>No support tickets yet.</Text>}
+          </>
+        )}
+        {!loading && errorMessage && (
+          <ErrorState title="Tickets unavailable" description={errorMessage} onAction={load} />
+        )}
+        {!loading && !errorMessage && tickets.length === 0 && (
+          <EmptyState title="No tickets yet" description="Submit a request and we'll follow up here." />
+        )}
+        {!loading &&
+          !errorMessage &&
+          tickets.map((ticket) => (
+            <View style={styles.ticket} key={ticket._id}>
+              <Text style={styles.ticketTag}>{ticket.status}</Text>
+              <Text style={styles.ticketTitle}>{ticket.subject}</Text>
+              <Text style={textStyles.muted}>{ticket.message}</Text>
+              {ticket.replies?.map((reply, index) => (
+                <Text style={textStyles.muted} key={`${ticket._id}-${index}`}>
+                  {reply.byRole}: {reply.message}
+                </Text>
+              ))}
+            </View>
+          ))}
       </View>
     </ScrollView>
   )

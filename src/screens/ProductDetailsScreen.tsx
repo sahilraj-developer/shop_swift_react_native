@@ -8,12 +8,16 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { colors, spacing, text as textStyles, shadows } from '../theme'
 import { fetchOrders, fetchProductById, fetchReviews, submitReview } from '../api'
 import type { AuthUser } from '../api'
 import type { Review } from '../types'
 import { useCart } from '../cart'
+import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import SkeletonBlock from '../components/Skeleton'
+import { trackError } from '../telemetry'
 
 type Props = {
   id: string
@@ -40,45 +44,50 @@ const ProductDetailsScreen = ({ id, token, user, onCheckout }: Props) => {
   const [mediaVideos, setMediaVideos] = useState<string[]>([])
   const [hasPurchased, setHasPurchased] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const existingReview = useMemo(
     () => reviews.find((review) => review.customerId === user?.id),
     [reviews, user?.id]
   )
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const product = await fetchProductById(id)
-        if (!product) {
-          setLoading(false)
-          return
-        }
-        setProductName(product.name)
-        setProductDescription(product.description)
-        setProductPrice(product.price)
-        setProductInventory(product.inventory)
-        setProductStatus(product.status)
-        setImages(product.images ?? [])
-
-        const reviewData = await fetchReviews(id)
-        setReviews(reviewData)
-
-        if (token && user?.role === 'customer') {
-          const orders = await fetchOrders(token)
-          const purchased = orders.some((order) =>
-            order.items.some((item) => item.productId === id)
-          )
-          setHasPurchased(purchased)
-        }
-      } catch (error) {
-        Alert.alert('Unable to load product', error instanceof Error ? error.message : 'Try again')
-      } finally {
+  const loadProduct = useCallback(async () => {
+    try {
+      setLoading(true)
+      setErrorMessage(null)
+      const product = await fetchProductById(id)
+      if (!product) {
         setLoading(false)
+        return
       }
+      setProductName(product.name)
+      setProductDescription(product.description)
+      setProductPrice(product.price)
+      setProductInventory(product.inventory)
+      setProductStatus(product.status)
+      setImages(product.images ?? [])
+
+      const reviewData = await fetchReviews(id)
+      setReviews(reviewData)
+
+      if (token && user?.role === 'customer') {
+        const orders = await fetchOrders(token)
+        const purchased = orders.some((order) =>
+          order.items.some((item) => item.productId === id)
+        )
+        setHasPurchased(purchased)
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to load product.')
+      trackError(error, 'loadProductDetails')
+    } finally {
+      setLoading(false)
     }
-    load()
   }, [id, token, user?.role])
+
+  useEffect(() => {
+    loadProduct()
+  }, [loadProduct])
 
   useEffect(() => {
     if (existingReview) {
@@ -127,7 +136,27 @@ const ProductDetailsScreen = ({ id, token, user, onCheckout }: Props) => {
   if (loading) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text style={textStyles.muted}>Loading product...</Text>
+        <View style={styles.detailCard}>
+          <SkeletonBlock height={260} radius={18} />
+          <View style={styles.info}>
+            <SkeletonBlock height={10} width="30%" />
+            <SkeletonBlock height={20} width="70%" />
+            <SkeletonBlock height={12} width="90%" />
+            <SkeletonBlock height={18} width="40%" />
+            <View style={styles.actions}>
+              <SkeletonBlock height={40} width={140} radius={999} />
+              <SkeletonBlock height={40} width={140} radius={999} />
+            </View>
+          </View>
+        </View>
+      </ScrollView>
+    )
+  }
+
+  if (errorMessage) {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <ErrorState title="Product unavailable" description={errorMessage} onAction={loadProduct} />
       </ScrollView>
     )
   }
@@ -135,7 +164,7 @@ const ProductDetailsScreen = ({ id, token, user, onCheckout }: Props) => {
   if (!productName) {
     return (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text style={textStyles.muted}>Product not found.</Text>
+        <EmptyState title="Product not found" description="This item may have been removed or is pending approval." />
       </ScrollView>
     )
   }
