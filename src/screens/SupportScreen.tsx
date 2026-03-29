@@ -1,5 +1,5 @@
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { colors, spacing, text as textStyles, shadows } from '../theme'
 import { createSupportTicket, fetchSupportTickets } from '../api'
 import type { SupportTicket } from '../types'
@@ -19,7 +19,7 @@ const SupportScreen = ({ token }: Props) => {
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!token) return
     try {
       setLoading(true)
@@ -32,11 +32,11 @@ const SupportScreen = ({ token }: Props) => {
     } finally {
       setLoading(false)
     }
-  }
+  }, [token])
 
   useEffect(() => {
     load()
-  }, [token])
+  }, [load])
 
   const submit = async () => {
     if (!token) return

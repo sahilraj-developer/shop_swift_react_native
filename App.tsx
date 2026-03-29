@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavigationContainer } from '@react-navigation/native'
-import { createNativeStackNavigator } from '@react-navigation/native-stack'
+import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
 import { Pressable, StatusBar, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -20,6 +20,7 @@ import type { Order } from './src/types'
 import OrdersScreen from './src/screens/OrdersScreen'
 import OnboardingScreen from './src/screens/OnboardingScreen'
 import { initTelemetry, installGlobalErrorHandler, trackScreen } from './src/telemetry'
+import { AppContext, useAppContext } from './src/appContext'
 
 type RootStackParamList = {
   Onboarding: undefined
@@ -43,6 +44,7 @@ type TabParamList = {
 const RootStack = createNativeStackNavigator<RootStackParamList>()
 const HomeStack = createNativeStackNavigator<HomeStackParamList>()
 const Tabs = createBottomTabNavigator<TabParamList>()
+
 enableScreens()
 
 const headerBase = {
@@ -52,6 +54,127 @@ const headerBase = {
   headerShadowVisible: false,
   headerBackTitleVisible: false,
 }
+
+const HeaderLogout = () => {
+  const { logout } = useAppContext()
+  return (
+    <Pressable onPress={logout} style={styles.logoutButton}>
+      <Text style={styles.logoutText}>Log out</Text>
+    </Pressable>
+  )
+}
+
+const BootingScreen = () => (
+  <View style={styles.loadingScreen}>
+    <Text style={styles.loadingText}>Loading ShopSwift...</Text>
+  </View>
+)
+
+const LoginRoute = () => {
+  const { setAuth } = useAppContext()
+  return <LoginScreen onSuccess={setAuth} />
+}
+
+const OnboardingRoute = () => {
+  const { completeOnboarding } = useAppContext()
+  return <OnboardingScreen onFinish={completeOnboarding} />
+}
+
+const HomeRoute = ({ navigation }: NativeStackScreenProps<HomeStackParamList, 'Home'>) => {
+  const { user, token, logout } = useAppContext()
+
+  const navigateToTab = (tab: keyof TabParamList) => {
+    const parent = navigation.getParent()
+    parent?.navigate(tab as never)
+  }
+
+  return (
+    <CustomerHomeScreen
+      name={user?.name ?? 'Customer'}
+      token={token}
+      onLogout={logout}
+      onCheckout={() => navigateToTab('Checkout')}
+      onNotifications={() => navigateToTab('Notifications')}
+      onOpenProduct={(id) => navigation.navigate('ProductDetails', { id })}
+    />
+  )
+}
+
+const ProductDetailsRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<HomeStackParamList, 'ProductDetails'>) => {
+  const { user, token } = useAppContext()
+
+  const navigateToTab = (tab: keyof TabParamList) => {
+    const parent = navigation.getParent()
+    parent?.navigate(tab as never)
+  }
+
+  return (
+    <ProductDetailsScreen
+      id={route.params.id}
+      token={token}
+      user={user}
+      onCheckout={() => navigateToTab('Checkout')}
+    />
+  )
+}
+
+const HomeStackScreen = () => (
+  <HomeStack.Navigator screenOptions={headerBase}>
+    <HomeStack.Screen name="Home" component={HomeRoute} options={{ title: 'Storefront', headerRight: HeaderLogout }} />
+    <HomeStack.Screen
+      name="ProductDetails"
+      component={ProductDetailsRoute}
+      options={{ title: 'Product details' }}
+    />
+  </HomeStack.Navigator>
+)
+
+const OrdersRoute = () => {
+  const { orders, ordersError, ordersLoading, refreshOrders } = useAppContext()
+  return (
+    <OrdersScreen orders={orders} loading={ordersLoading} error={ordersError} onRetry={refreshOrders} />
+  )
+}
+
+const CheckoutRoute = () => {
+  const { token, user } = useAppContext()
+  return <CheckoutScreen token={token} email={user?.email ?? ''} addresses={user?.addresses ?? []} />
+}
+
+const NotificationsRoute = () => {
+  const { token } = useAppContext()
+  return <NotificationsScreen token={token} />
+}
+
+const SupportRoute = () => {
+  const { token } = useAppContext()
+  return <SupportScreen token={token} />
+}
+
+const TabScreen = () => (
+  <Tabs.Navigator
+    screenOptions={{
+      headerShown: true,
+      tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border },
+      tabBarActiveTintColor: colors.sage,
+      tabBarInactiveTintColor: 'rgba(16,16,16,0.6)',
+      ...headerBase,
+    }}
+  >
+    <Tabs.Screen name="Storefront" component={HomeStackScreen} options={{ title: 'Storefront', headerShown: false }} />
+    <Tabs.Screen name="Orders" component={OrdersRoute} options={{ title: 'Orders', headerRight: HeaderLogout }} />
+    <Tabs.Screen name="Checkout" component={CheckoutRoute} options={{ title: 'Checkout', headerRight: HeaderLogout }} />
+    <Tabs.Screen
+      name="Notifications"
+      component={NotificationsRoute}
+      options={{ title: 'Notifications', headerRight: HeaderLogout }}
+    />
+    <Tabs.Screen name="Support" component={SupportRoute} options={{ title: 'Support', headerRight: HeaderLogout }} />
+  </Tabs.Navigator>
+)
 
 const App = () => {
   const [token, setToken] = useState<string | null>(null)
@@ -64,13 +187,37 @@ const App = () => {
   const navigationRef = useRef<any>(null)
   const routeNameRef = useRef<string | undefined>(undefined)
 
-  const logout = () => {
+  const logout = useCallback(() => {
     setToken(null)
     setUser(null)
     setOrders([])
     setOrdersLoading(false)
     setOrdersError(null)
-  }
+  }, [])
+
+  const setAuth = useCallback((nextToken: string, nextUser: AuthUser) => {
+    setToken(nextToken)
+    setUser(nextUser)
+  }, [])
+
+  const completeOnboarding = useCallback(async () => {
+    await AsyncStorage.setItem('onboarding_done', 'true')
+    setOnboardingDone(true)
+  }, [])
+
+  const refreshOrders = useCallback(async () => {
+    if (!token) return
+    try {
+      setOrdersLoading(true)
+      setOrdersError(null)
+      const data = await fetchOrders(token)
+      setOrders(data)
+    } catch (error) {
+      setOrdersError(error instanceof Error ? error.message : 'Unable to load orders.')
+    } finally {
+      setOrdersLoading(false)
+    }
+  }, [token])
 
   useEffect(() => {
     initTelemetry()
@@ -92,166 +239,58 @@ const App = () => {
   }, [])
 
   useEffect(() => {
-    const load = async () => {
-      if (!token) return
-      try {
-        setOrdersLoading(true)
-        setOrdersError(null)
-        const data = await fetchOrders(token)
-        setOrders(data)
-      } catch (error) {
-        setOrdersError(error instanceof Error ? error.message : 'Unable to load orders.')
-      } finally {
-        setOrdersLoading(false)
-      }
-    }
-    load()
-  }, [token])
+    refreshOrders()
+  }, [refreshOrders])
 
-  const LogoutButton = () => (
-    <Pressable onPress={logout} style={styles.logoutButton}>
-      <Text style={styles.logoutText}>Log out</Text>
-    </Pressable>
-  )
-
-  const HomeStackScreen = () => (
-    <HomeStack.Navigator screenOptions={headerBase}>
-      <HomeStack.Screen
-        name="Home"
-        options={{ title: 'Storefront', headerRight: () => <LogoutButton /> }}
-      >
-        {({ navigation }) => (
-          <CustomerHomeScreen
-            name={user?.name ?? 'Customer'}
-            token={token}
-            onLogout={logout}
-            onCheckout={() => navigation.navigate('Checkout' as never)}
-            onNotifications={() => navigation.navigate('Notifications' as never)}
-            onOpenProduct={(id) => navigation.navigate('ProductDetails', { id })}
-          />
-        )}
-      </HomeStack.Screen>
-      <HomeStack.Screen name="ProductDetails" options={{ title: 'Product details' }}>
-        {({ route, navigation }) => (
-          <ProductDetailsScreen
-            id={route.params.id}
-            token={token}
-            user={user}
-            onCheckout={() => navigation.navigate('Checkout' as never)}
-          />
-        )}
-      </HomeStack.Screen>
-    </HomeStack.Navigator>
-  )
-
-  const TabScreen = () => (
-    <Tabs.Navigator
-      screenOptions={{
-        headerShown: true,
-        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border },
-        tabBarActiveTintColor: colors.sage,
-        tabBarInactiveTintColor: 'rgba(16,16,16,0.6)',
-        ...headerBase,
-      }}
-    >
-      <Tabs.Screen
-        name="Storefront"
-        component={HomeStackScreen}
-        options={{ title: 'Storefront', headerShown: false }}
-      />
-      <Tabs.Screen name="Orders" options={{ title: 'Orders', headerRight: () => <LogoutButton /> }}>
-        {() => (
-          <OrdersScreen
-            orders={orders}
-            loading={ordersLoading}
-            error={ordersError}
-            onRetry={async () => {
-              if (!token) return
-              setOrdersLoading(true)
-              setOrdersError(null)
-              try {
-                const data = await fetchOrders(token)
-                setOrders(data)
-              } catch (error) {
-                setOrdersError(error instanceof Error ? error.message : 'Unable to load orders.')
-              } finally {
-                setOrdersLoading(false)
-              }
-            }}
-          />
-        )}
-      </Tabs.Screen>
-      <Tabs.Screen name="Checkout" options={{ title: 'Checkout', headerRight: () => <LogoutButton /> }}>
-        {() => <CheckoutScreen token={token} email={user?.email ?? ''} addresses={user?.addresses ?? []} />}
-      </Tabs.Screen>
-      <Tabs.Screen
-        name="Notifications"
-        options={{ title: 'Notifications', headerRight: () => <LogoutButton /> }}
-      >
-        {() => <NotificationsScreen token={token} />}
-      </Tabs.Screen>
-      <Tabs.Screen name="Support" options={{ title: 'Support', headerRight: () => <LogoutButton /> }}>
-        {() => <SupportScreen token={token} />}
-      </Tabs.Screen>
-    </Tabs.Navigator>
+  const contextValue = useMemo(
+    () => ({
+      token,
+      user,
+      orders,
+      ordersLoading,
+      ordersError,
+      setAuth,
+      logout,
+      refreshOrders,
+      completeOnboarding,
+    }),
+    [token, user, orders, ordersLoading, ordersError, setAuth, logout, refreshOrders, completeOnboarding]
   )
 
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="dark-content" backgroundColor={colors.sand} />
       <CartProvider>
-        <NavigationContainer
-          ref={navigationRef}
-          onReady={() => {
-            routeNameRef.current = navigationRef.current?.getCurrentRoute?.()?.name
-            if (routeNameRef.current) {
-              trackScreen(routeNameRef.current)
-            }
-          }}
-          onStateChange={() => {
-            const currentRoute = navigationRef.current?.getCurrentRoute?.()?.name
-            if (currentRoute && routeNameRef.current !== currentRoute) {
-              trackScreen(currentRoute)
-              routeNameRef.current = currentRoute
-            }
-          }}
-        >
-          <RootStack.Navigator screenOptions={{ headerShown: false }}>
-            {booting ? (
-              <RootStack.Screen name="Onboarding">
-                {() => (
-                  <View style={styles.loadingScreen}>
-                    <Text style={styles.loadingText}>Loading ShopSwift...</Text>
-                  </View>
-                )}
-              </RootStack.Screen>
-            ) : !onboardingDone ? (
-              <RootStack.Screen name="Onboarding">
-                {() => (
-                  <OnboardingScreen
-                    onFinish={async () => {
-                      await AsyncStorage.setItem('onboarding_done', 'true')
-                      setOnboardingDone(true)
-                    }}
-                  />
-                )}
-              </RootStack.Screen>
-            ) : !token ? (
-              <RootStack.Screen name="Login">
-                {() => (
-                  <LoginScreen
-                    onSuccess={(nextToken, nextUser) => {
-                      setToken(nextToken)
-                      setUser(nextUser)
-                    }}
-                  />
-                )}
-              </RootStack.Screen>
-            ) : (
-              <RootStack.Screen name="Main" component={TabScreen} />
-            )}
-          </RootStack.Navigator>
-        </NavigationContainer>
+        <AppContext.Provider value={contextValue}>
+          <NavigationContainer
+            ref={navigationRef}
+            onReady={() => {
+              routeNameRef.current = navigationRef.current?.getCurrentRoute?.()?.name
+              if (routeNameRef.current) {
+                trackScreen(routeNameRef.current)
+              }
+            }}
+            onStateChange={() => {
+              const currentRoute = navigationRef.current?.getCurrentRoute?.()?.name
+              if (currentRoute && routeNameRef.current !== currentRoute) {
+                trackScreen(currentRoute)
+                routeNameRef.current = currentRoute
+              }
+            }}
+          >
+            <RootStack.Navigator screenOptions={{ headerShown: false }}>
+              {booting ? (
+                <RootStack.Screen name="Onboarding" component={BootingScreen} />
+              ) : !onboardingDone ? (
+                <RootStack.Screen name="Onboarding" component={OnboardingRoute} />
+              ) : !token ? (
+                <RootStack.Screen name="Login" component={LoginRoute} />
+              ) : (
+                <RootStack.Screen name="Main" component={TabScreen} />
+              )}
+            </RootStack.Navigator>
+          </NavigationContainer>
+        </AppContext.Provider>
       </CartProvider>
     </SafeAreaProvider>
   )
